@@ -1,0 +1,117 @@
+Proposal: Prompt Sensitivity of Uncertainty Estimates in Large
+Language Models
+Group 3
+Administrative Information
+Group membersXuan Zhang (A0285640B), Shuo Ji (A0319474W)
+Jiajia Li (A0319024M), Zihuang Li (A0319118E)
+Chosen theme■Decision Consistency and Threshold Effects
+Compute plan□API-based□open-source■mixed
+Reproducibility plan■Repo link (if any) /□planned structure /□environment notes
+Abstract
+This study investigates a core question: how sensitive are LLMs’ uncertainty estimates to perturba-
+tions in semantically equivalent prompts? We test mainstream models (Llama-3 8B/70B Instruct,
+GPT-5) on the SciQ and TruthfulQA datasets, designing semantically equivalent prompt variants
+for each sample. Key metrics (Uncertainty Stability Score, Prediction Flip Rate, etc.) are used to
+quantify the stability of uncertainty estimates and prediction variations, as well as analyze entropy
+and logit margin variances and their correlation with prediction flips. We aim to identify inter-
+model sensitivity differences and the impacts of different prompt variants on uncertainty stability,
+and uncover hidden confidence instability if predictions stay stable but uncertainty estimates fluc-
+tuate sharply. The findings will underpin the assessment of LLM system robustness, inform more
+robust uncertainty estimation methods and prompt engineering optimization, and guide risk-aware
+decision-making to boost decision consistency in real-world applications.
+1. Research Question/Background
+Large language models (LLMs) are widely used in tasks such as text classification and content
+evaluation. In many applications, models are expected not only to produce predictions but also to
+provide reliable uncertainty estimates, which are important for high-stake tasks . However, LLMs
+interact with users through natural language prompts, and prior work has shown that small prompt
+modifications can influence model predictions and evaluation results. While existing studies mainly
+focus on how prompt perturbations affect prediction accuracy, it remains unclear whether model
+uncertainty estimates themselves are stable under prompt variations. Therefore, understanding
+1
+the stability of uncertainty estimates under prompt perturbations is an important step toward
+evaluating the robustness of LLM-based systems. Research question: How sensitive are LLM
+uncertainty estimates to semantically equivalent prompt perturbations?
+2. Motivation and Related Work
+Although many methods have been proposed to estimate uncertainty in large language models, these
+estimates are typically evaluated under a fixed prompt setting. In practice, however, LLM systems
+interact with users through natural language prompts, and small variations in prompt wording
+or formatting can lead to different model behaviors. If uncertainty estimates vary significantly
+across semantically equivalent prompts, systems that rely on uncertainty thresholds may produce
+inconsistent decisions. This raises an important question: are uncertainty estimates themselves
+robust to semantically equivalent prompt variations?
+Recent work studies uncertainty estimation in LLMs using prompting based methods. Some
+studies prompt models to output confidence scores and evaluate calibration using metrics such as
+ECE and AUROC (Xiong et al., 2024; Yang et al., 2024), while others propose self evaluation
+frameworks such asP(T rue) (Kadavath et al., 2022) or selective generation methods (Ren et al.,
+2023). Sampling based approaches estimate uncertainty through output diversity under stochastic
+decoding (Lyu et al., 2025), and prompt agreement methods measure uncertainty across multiple
+prompt variants (Portillo Wightman et al., 2023). However, these studies mainly focus on improving
+uncertainty estimation or calibration while the stability of uncertainty estimates under prompt
+perturbations has received limited attention.
+3. Experimental Setup
+3.1 Models
+We will evaluate several widely used LLMs, including both open-source and API-based models
+where possible: Llama-3 8B Instruct, Llama-3 70B Instruct, one proprietary model GPT-5.
+3.2 Datasets / Tasks
+Dataset/T ask Size Sampling / split / inclusion criteria
+SciQ 13,679 We randomly sample 200–300 questions from the
+dataset due to API cost.
+TruthfulQA 817 We randomly sample 200–300 questions.
+4. Metrics and Evaluation Protocol
+4.1 Primary metrics
+We evaluate the stability of model predictions and uncertainty estimates under prompt variations
+using the following set of quantitative metrics:
+2
+1. Uncertainty Stability Score (USS).To quantify the stability of uncertainty estimates
+across prompt variants, we introduce the Uncertainty Stability Score. For each inputx, we compute
+the predictive entropyU(x, p) under multiple promptsp∈P. The score is defined as
+U SS(x) = 1− Stdp(U(x, p))
+Meanp(U(x, p)) +ϵ
+whereϵis a small constant. Higher USS values indicate that uncertainty estimates remain
+relatively consistent across different prompt variants.
+2. Prediction Flip Rate.We measure the proportion of examples for which the predicted
+label changes across different prompt variants. This metric captures the sensitivity of model pre-
+dictions to small prompt perturbations in wording or format.
+3. Logit Margin V ariance.We compute the difference between the top-1 and top-2 logits
+(logit margin) for each prompt variant and measure its variance across prompts. This metric reflects
+the stability of model confidence under prompt variations.
+4.2 Statistical protocol
+We report the mean and standard deviation of uncertainty-related metrics across prompts and
+analyze prediction flip rates and uncertainty variance across examples. These statistics allow us
+to assess the stability of uncertainty estimates and identify cases where prompt variations lead to
+significant changes in model confidence.
+5. Analysis Plan
+We will analyze how prompt variations influence model behavior in several ways. First, we measure
+prediction stability by computing how often predicted labels change across semantically equivalent
+prompts. Second, we examine uncertainty stability by analyzing variations in predictive entropy
+and logit margins for the same input under different prompts. Third, we investigate whether higher
+uncertainty variance correlates with prediction flips. Finally, we compare different prompt types
+to assess their impact on uncertainty stability.
+6. Expected Challenges, Limitations, and Ethics
+This project may face several practical and methodological challenges:
+1. API and model access constraints: API-based models may have rate limits or cost constraints,
+which could limit the number of prompt evaluations. In addition, closed-source models may not
+provide access to logits needed for uncertainty estimation.
+2. Prompt design challenge: Designing semantically equivalent prompt variants is difficult, as
+prompts must differ in wording or structure while preserving the same task meaning. Otherwise,
+observed differences may reflect task changes rather than prompt sensitivity.
+3
+References
+Saurav Kadavath, Tom Conerly, Amanda Askell, Tom Henighan, Dawn Drain, Ethan Perez,
+Nicholas Schiefer, Zac Hatfield-Dodds, Nova DasSarma, Eli Tran-Johnson, et al. Language mod-
+els (mostly) know what they know.arXiv preprint arXiv:2207.05221, 2022.
+Qing Lyu, Kumar Shridhar, Chaitanya Malaviya, Li Zhang, Yanai Elazar, Niket Tandon, Marianna
+Apidianaki, and Mrinmaya Sachan. Calibrating large language models with sample consistency.
+InProceedings of the AAAI Conference on Artificial Intelligence, volume 39, pages 19260–19268,
+2025.
+Gwenyth Portillo Wightman, Alexandra Delucia, and Mark Dredze. Strength in numbers: Esti-
+mating confidence of large language models by prompt agreement. InProceedings of the 3rd
+Workshop on Trustworthy Natural Language Processing (TrustNLP 2023), pages 326–362, 2023.
+Jie Ren, Yao Zhao, Tu Vu, Peter J. Liu, and Balaji Lakshminarayanan. Self-evaluation improves
+selective generation in large language models.arXiv preprint arXiv:2312.09300, 2023.
+Miao Xiong, Zhiyuan Hu, Xinyang Lu, Yifei Li, Jie Fu, Junxian He, and Bryan Hooi. Can LLMs
+express their uncertainty? an empirical evaluation of confidence elicitation in LLMs.arXiv
+preprint arXiv:2306.13063, 2024.
+Dennis Yang, Yung-Hsin Henry Tsai, and Makoto Yamada. On verbalized confidence scores for
+LLMs.arXiv preprint arXiv:2412.14737, 2024.
+4

@@ -1,0 +1,183 @@
+Prompt 变体设计说明文档
+========================
+项目：LLM 不确定性估计的 Prompt 敏感性研究
+数据集：SciQ、TruthfulQA
+最后更新：2026-04-01
+
+
+─────────────────────────────────────────────
+一、什么叫"语义等价"的 prompt 变体？
+─────────────────────────────────────────────
+
+对于选择题任务，两个 prompt 语义等价，当且仅当人类读完后对任务的理解完全一致。具体要求：
+
+  (a) 任务动作不变：都是"从 A/B/C/D 中选一个"
+  (b) 选项内容不变：四个选项的文字完全相同
+  (c) 评判标准不变：所有变体都在找"正确的"答案，含义不偏移
+  (d) 输出格式不变：只输出一个字母，不需要解释
+  (e) 不注入额外信息：不加提示、背景、推理引导、角色设定
+
+
+─────────────────────────────────────────────
+二、哪些改动是安全的，哪些会破坏实验？
+─────────────────────────────────────────────
+
+【安全改动——纯表面扰动】
+  • 指令措辞，只要核心含义不变
+  • 选项标注格式：A) / A. / (A) / A:
+  • 指令位置：问题前 vs 问题后
+  • 是否有 "Question:" 前缀
+  • 作答提示语：Answer: / Your answer: / Correct option:
+
+【危险改动——会引入语义偏移】
+
+  用 "best"（最好的）代替 "correct"（正确的）
+    → "best" 是主观词，可以理解成"最有说服力的"而非"事实正确的"，
+      在 TruthfulQA 上尤其危险
+
+  用 "most likely"（最可能的）代替 "correct"
+    → 引入了概率/认知框架，改变了任务性质
+
+  用 "truthful"（真实的）/ "factual"（事实性的）
+    → 向模型透露了数据集的设计意图，可能人为抬高 TruthfulQA 的准确率，
+      干扰敏感性测量
+
+  加入任何推理提示，如 "think step by step" / "explain your reasoning"
+    → 变成 CoT 任务，不确定性估计会系统性改变，不可比较
+
+  加入角色扮演，如 "as a scientist" / "as an expert"
+    → 改变模型的回答风格和置信度校准，与 prompt 措辞无关
+
+
+─────────────────────────────────────────────
+三、设计原则
+─────────────────────────────────────────────
+
+原则 1：措辞锚定
+  所有变体、两个数据集，统一用 "correct" 描述目标答案。
+  评判标准在所有变体中保持一致。
+
+原则 2：最小化差异
+  每个变体最多改变两个表面维度。
+  四个变体覆盖四个（近似正交的）扰动维度：
+    指令措辞（V0 vs V1）、指令位置（V0/V1 vs V2）、
+    指令有无（V0/V1/V2 vs V3）、选项标注格式（四个各不同）
+
+原则 3：不泄露数据集信息
+  指令句中不出现 "science"、"truthful"、"factual" 等与数据集
+  设计意图相关的词。两个数据集使用完全相同的变体结构，便于跨数据集对比。
+
+原则 4：作答提示语统一以冒号结尾
+  所有变体结尾都是 "Answer:" / "Your answer:" / "Correct option:"，
+  保证模型在冒号之后直接生成字母，logit 提取的上下文一致。
+
+原则 5：指令强度均匀分布
+  V0 最明确（完整指令）；V1/V2 居中；V3 最简（无指令句），
+  代表指令详细程度的下界。不让任何变体过于突兀地偏离其他变体。
+
+
+─────────────────────────────────────────────
+四、四个变体的维度矩阵
+─────────────────────────────────────────────
+
+  变体 | 指令位置   | 指令措辞                    | 选项格式 | 作答提示
+  -----|-----------|----------------------------|---------|----------
+  V0  | 问题之前   | "Choose the correct answer." | A)      | Answer:
+  V1  | 问题之前   | "Select the correct option." | A.      | Your answer:
+  V2  | 选项之后   | "Which option is correct?"   | (A)     | Correct option:
+  V3  | 无指令句   | （无）                       | A:      | Answer:
+
+
+─────────────────────────────────────────────
+五、完整 prompt 模板
+─────────────────────────────────────────────
+
+SciQ 和 TruthfulQA 使用完全相同的结构，[问题] 和 [选项] 按样本填入。
+（TruthfulQA 的 V2 指令句是 "Which of the options is correct?"，
+ 比 SciQ 多一个 "of the"，仅语法上的微小差异。）
+
+------- V0：基础版（指令在前，A) 格式）---------
+  Answer the following multiple-choice question. Choose the correct answer.
+
+  Question: [问题]
+
+    A) [选项文本]
+    B) [选项文本]
+    C) [选项文本]
+    D) [选项文本]
+
+  Respond with a single letter (A, B, C, or D).
+  Answer:
+
+------- V1：改写指令（A. 格式，不同提示语）------
+  Read the question below and select the correct option.
+
+  [问题]
+
+    A. [选项文本]
+    B. [选项文本]
+    C. [选项文本]
+    D. [选项文本]
+
+  Reply with only the letter of your answer.
+  Your answer:
+
+------- V2：问题前置（(A) 格式，指令在选项后）--
+  Question: [问题]
+
+    (A) [选项文本]
+    (B) [选项文本]
+    (C) [选项文本]
+    (D) [选项文本]
+
+  Which option is correct? Reply with only the corresponding letter.
+  Correct option:
+
+------- V3：极简版（无指令句，A: 格式）----------
+  [问题]
+
+    A: [选项文本]
+    B: [选项文本]
+    C: [选项文本]
+    D: [选项文本]
+
+  Answer:
+
+
+─────────────────────────────────────────────
+六、为什么两个数据集用相同的变体结构？
+─────────────────────────────────────────────
+
+两个数据集使用结构完全统一的变体，有两个好处：
+
+  (1) 跨数据集可比性
+      SciQ 和 TruthfulQA 之间敏感性指标（USS、flip rate、logit
+      margin variance）的差异，可以归因于数据集本身的特性
+      （难度、模糊性、模型校准），而不是 prompt 结构不同造成的。
+
+  (2) 结果更易解释
+      如果 V3（无指令）在 TruthfulQA 上造成更多 flip，
+      而在 SciQ 上没有，这是一个有意义的发现，可以直接写进论文。
+
+
+─────────────────────────────────────────────
+七、相比旧版的修改内容
+─────────────────────────────────────────────
+
+问题 1：SciQ V1 和 TruthfulQA V2/V3 使用了 "best"
+  旧版：  "Select the best answer" / "Best answer:"
+  新版：  "Select the correct option." / "Your answer:" / "Correct option:"
+  原因：  "best" 语义模糊，见第二节
+
+问题 2：TruthfulQA V1 使用了 "most truthful"
+  旧版：  "Choose the most truthful answer to this question."
+  新版：  "Read the question below and select the correct option."
+  原因：  "most truthful" 向模型泄露了数据集的评判框架
+
+问题 3：两个数据集的变体结构各自独立、不统一
+  旧版：  SciQ 和 TruthfulQA 有各自不同的变体设计
+  新版：  统一为相同的四个结构槽位，跨数据集直接可比
+
+问题 4：get_variant_descriptions() 接受 dataset 参数但无实质区分
+  旧版：  函数签名 get_variant_descriptions(dataset: str)
+  新版：  移除参数，两数据集共用同一套描述

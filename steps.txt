@@ -1,0 +1,110 @@
+代码逻辑完整，路径正确。以下是完整运行步骤：
+                                                                                                                                                                                                                             
+  ---
+  运行步骤                                                                                                                                                                                                                   
+                                                                                                                                                                                                                               环境要求                                                                                                                                                                                                                   
+                                                                                                                                                                                                                             
+  ┌──────────────────────────────────┬──────────────────────────────────────────┐
+  │              模型                │                 硬件需求                 │
+  ├──────────────────────────────────┼──────────────────────────────────────────┤
+  │ Llama-3 8B（本地）               │ GPU ≥ 16GB VRAM（8-bit量化可降至约10GB） │
+  ├──────────────────────────────────┼──────────────────────────────────────────┤
+  │ Llama-3 70B（本地）              │ GPU ≥ 80GB VRAM（多卡或4-bit量化）       │
+  ├──────────────────────────────────┼──────────────────────────────────────────┤
+  │ GPT-4o / GPT-5（OpenAI API）     │ 只需 OpenAI API Key，无需GPU             │
+  ├──────────────────────────────────┼──────────────────────────────────────────┤
+  │ 任意模型（OpenRouter API）       │ 只需 OpenRouter API Key，无需GPU         │
+  └──────────────────────────────────┴──────────────────────────────────────────┘
+
+  ---
+  Step 1 — 安装依赖
+
+  cd ST5230-Project
+  pip install -r requirements.txt
+
+  ▎ 如果不跑 Llama，可以跳过 torch、transformers、bitsandbytes；只用 API 的话最小依赖是 openai python-dotenv pandas numpy scipy matplotlib seaborn datasets。
+
+  ---
+  Step 2 — 准备数据（只需运行一次）
+
+  python sources/data_utils.py
+
+  这会从 HuggingFace 下载 SciQ 和 TruthfulQA，各采样 250 条，保存到：
+  outputs/data/sciq_sample.json
+  outputs/data/truthfulqa_sample.json
+
+  ---
+  Step 3 — 运行实验
+
+  每条命令对应一个 (模型 × 数据集) 组合，共需跑 6 次（3模型 × 2数据集）。
+
+  OpenRouter（推荐，无需GPU，支持 Llama / Claude / Gemini 等大量模型）：
+  # API Key 已保存在 .env 文件中，无需额外设置
+
+  python run_experiment.py --model meta-llama/llama-3.1-8b-instruct --dataset sciq --openrouter
+  python run_experiment.py --model meta-llama/llama-3.1-8b-instruct --dataset truthfulqa --openrouter
+
+  ▎ OpenRouter 模型名称查询：https://openrouter.ai/models
+    常用模型示例：
+      meta-llama/llama-3.1-8b-instruct
+      meta-llama/llama-3.3-70b-instruct
+      anthropic/claude-3.5-sonnet
+      google/gemini-flash-1.5
+
+  ---
+  GPT 系列（需要 OpenAI API Key）：
+  export OPENAI_API_KEY="sk-..."   # Linux/Mac
+  # 或 Windows: set OPENAI_API_KEY=sk-...
+
+  python run_experiment.py --model gpt-4o --dataset sciq
+  python run_experiment.py --model gpt-4o --dataset truthfulqa
+
+  Llama-3 8B 本地（需要 HuggingFace 访问权限 + GPU）：
+  huggingface-cli login   # 输入 HF token（Llama-3 需要申请访问权限）
+
+  python run_experiment.py --model meta-llama/Meta-Llama-3-8B-Instruct --dataset sciq --load_in_8bit
+  python run_experiment.py --model meta-llama/Meta-Llama-3-8B-Instruct --dataset truthfulqa --load_in_8bit
+
+  Llama-3 70B 本地：
+  python run_experiment.py --model meta-llama/Meta-Llama-3-70B-Instruct --dataset sciq --load_in_4bit
+  python run_experiment.py --model meta-llama/Meta-Llama-3-70B-Instruct --dataset truthfulqa --load_in_4bit
+
+  ▎ 断点续跑：中断后直接重新执行同一条命令，已处理的样本会自动跳过。
+
+  ▎ 快速测试（先跑10条验证流程）：加 --max_samples 10
+
+  结果保存到 outputs/results/<model>/，格式为每行一条 JSON 的 .jsonl 文件。
+
+  ---
+  Step 4 — 分析结果
+
+  python analyze_results.py
+
+  输出：
+  - 终端打印汇总表（Flip Rate、USS、Entropy、Accuracy、相关性等）
+  - outputs/figures/ 下生成 5 类 PDF 图表
+
+  ---
+  当前完成度
+
+  ┌─────────────────────────────────────────┬─────────┐
+  │                  模块                   │  状态   │
+  ├─────────────────────────────────────────┼─────────┤
+  │ 数据加载（SciQ + TruthfulQA）           │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ 4种prompt变体                           │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ Llama-3 推理（logit直接提取）           │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ OpenAI 推理（logprobs）                 │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ OpenRouter 支持（--openrouter 参数）    │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ USS / Flip Rate / Logit Margin Variance │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ 增量保存 + 断点续跑                     │ ✅ 完整 │
+  ├─────────────────────────────────────────┼─────────┤
+  │ 分析脚本 + 可视化                       │ ✅ 完整 │
+  └─────────────────────────────────────────┴─────────┘
+
+  目前是功能完整的实验。你先过一遍后，如果有需要调整的地方（比如 prompt 措辞、采样数量、新增模型等）随时告诉我。
