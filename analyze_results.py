@@ -1,21 +1,13 @@
 """
 Analysis and visualisation of experiment results.
 
-Loads all .jsonl result files from results/ and produces:
+Generates 5 figures + 1 summary table for the report:
 
-1. Per-model, per-dataset aggregate table
-   (flip_rate, USS, logit_margin_variance, corr_lmvar_flip, hidden_instability, accuracy)
-2. USS distribution box plots (per model/dataset)
-3. Prediction flip rate bar chart
-4. Logit margin variance vs flip status box plots  [replaces USS-entropy scatter]
-5. Per-variant accuracy line plots
-6. Logit margin distribution per prompt variant    [replaces entropy-by-variant]
-7. Logit margin variance distribution histogram    [new: SciQ vs TruthfulQA overlay]
-
-Note on entropy/USS: entropy is unreliable in this experiment because non-answer
-option tokens rarely appear in the top-20 logprobs returned by the API, so they
-are assigned a floor value of -20.0. USS (which depends on entropy) is therefore
-also unreliable. The primary confidence-instability metric is logit_margin_variance.
+  Fig 1  Flip Rate + LM Variance (cross-model grouped bar, two subplots)
+  Fig 2  LMVar vs Flip status (box plot, cross-model, by dataset)
+  Fig 3  Per-Variant Accuracy (line plot, cross-model, by dataset)
+  Fig 4  LM Variance distribution (histogram, cross-model, by dataset)
+  Fig 5  Hidden instability scatter (mean LM vs LM variance, colored by flip)
 
 Usage
 -----
@@ -38,18 +30,32 @@ import pandas as pd
 from scipy.stats import pointbiserialr
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "sources"))
-from uncertainty_metrics import (
-    aggregate_metrics,
-    correlation_uss_flip,
-)
+from uncertainty_metrics import aggregate_metrics, correlation_uss_flip
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "outputs", "results")
 FIGURES_DIR = os.path.join(os.path.dirname(__file__), "outputs", "figures")
 
-# Threshold for "high confidence instability" used in hidden-instability detection.
-# Chosen to be just below the SciQ mean lmvar (5.39); samples above this with
-# no prediction flip are flagged as showing hidden instability.
 LMVAR_INSTABILITY_THRESHOLD = 5.0
+
+# Display names for models (order matters: small → large)
+MODEL_ORDER = [
+    "mistralai_ministral-3b-2512",
+    "meta-llama_llama-3.1-8b-instruct",
+    "openai_gpt-4o",
+]
+MODEL_LABELS = {
+    "mistralai_ministral-3b-2512": "Ministral-3B",
+    "meta-llama_llama-3.1-8b-instruct": "Llama-3.1-8B",
+    "openai_gpt-4o": "GPT-4o",
+}
+DATASET_LABELS = {"sciq": "SciQ", "truthfulqa": "TruthfulQA"}
+DATASET_ORDER = ["sciq", "truthfulqa"]
+MODEL_COLORS = {
+    "mistralai_ministral-3b-2512": "#E24A33",
+    "meta-llama_llama-3.1-8b-instruct": "#348ABD",
+    "openai_gpt-4o": "#2CA02C",
+}
+DATASET_COLORS = {"sciq": "#348ABD", "truthfulqa": "#E24A33"}
 
 
 # ---------------------------------------------------------------------------
@@ -57,16 +63,13 @@ LMVAR_INSTABILITY_THRESHOLD = 5.0
 # ---------------------------------------------------------------------------
 
 def load_all_results(results_dir: str) -> Dict[str, Dict[str, List[dict]]]:
-    """
-    Returns nested dict: { model_tag : { dataset : [sample_record, …] } }
-    """
     all_results: Dict[str, Dict[str, List[dict]]] = {}
-
     for model_dir in sorted(os.listdir(results_dir)):
         model_path = os.path.join(results_dir, model_dir)
         if not os.path.isdir(model_path):
             continue
-
+        if model_dir not in MODEL_ORDER:
+            continue
         all_results[model_dir] = {}
         for fname in sorted(os.listdir(model_path)):
             if not fname.endswith(".jsonl"):
@@ -83,35 +86,14 @@ def load_all_results(results_dir: str) -> Dict[str, Dict[str, List[dict]]]:
                             pass
             if records:
                 all_results[model_dir][dataset] = records
-
     return all_results
 
 
-def records_to_metrics_df(records: List[dict]) -> pd.DataFrame:
-    """Flatten per-sample metrics into a DataFrame."""
-    rows = []
-    for rec in records:
-        m = rec.get("metrics", {})
-        row = {
-            "sample_idx": rec.get("sample_idx"),
-            "correct_letter": rec.get("correct_letter"),
-            **m,
-        }
-        # Add per-variant accuracy
-        variant_results = rec.get("variant_results", [])
-        correct = rec.get("correct_letter", "")
-        accs = [
-            int(r["predicted_letter"] == correct)
-            for r in variant_results
-            if r.get("predicted_letter") not in ("ERROR", None)
-        ]
-        row["mean_accuracy"] = float(np.mean(accs)) if accs else float("nan")
-        rows.append(row)
-    return pd.DataFrame(rows)
+def _get_model_label(tag: str) -> str:
+    return MODEL_LABELS.get(tag, tag)
 
 
 def _corr_lmvar_flip(metrics_list: List[dict]) -> Optional[float]:
-    """Point-biserial correlation between logit_margin_variance and flip (0/1)."""
     lmv = np.array([m["logit_margin_variance"] for m in metrics_list])
     flp = np.array([int(m["flip"]) for m in metrics_list])
     if flp.std() == 0 or lmv.std() == 0:
@@ -120,361 +102,343 @@ def _corr_lmvar_flip(metrics_list: List[dict]) -> Optional[float]:
     return float(corr)
 
 
-def _count_hidden_instability(records: List[dict]) -> int:
-    """
-    Count samples where prediction is stable (flip=False) but confidence
-    fluctuates significantly (logit_margin_variance > LMVAR_INSTABILITY_THRESHOLD).
-    """
-    count = 0
-    for rec in records:
-        m = rec.get("metrics", {})
-        if not m.get("flip", True) and m.get("logit_margin_variance", 0) > LMVAR_INSTABILITY_THRESHOLD:
-            count += 1
-    return count
-
-
 # ---------------------------------------------------------------------------
 # Summary table
 # ---------------------------------------------------------------------------
 
-def print_summary_table(all_results: Dict):
+def print_summary_table(all_results: Dict) -> pd.DataFrame:
     rows = []
-    for model_tag, datasets in all_results.items():
-        for dataset, records in datasets.items():
+    for model_tag in MODEL_ORDER:
+        if model_tag not in all_results:
+            continue
+        datasets = all_results[model_tag]
+        for dataset in DATASET_ORDER:
+            if dataset not in datasets:
+                continue
+            records = datasets[dataset]
             metrics_list = [r["metrics"] for r in records if r.get("metrics")]
             if not metrics_list:
                 continue
             agg = aggregate_metrics(metrics_list)
-            df = records_to_metrics_df(records)
 
-            corr_uss = correlation_uss_flip(metrics_list)
             corr_lmv = _corr_lmvar_flip(metrics_list)
-            hi_count = _count_hidden_instability(records)
 
-            rows.append(
-                {
-                    "model": model_tag,
-                    "dataset": dataset,
-                    "n": agg.get("n_samples"),
-                    "flip_rate": f"{agg.get('prediction_flip_rate', 0):.3f}",
-                    "uss_mean±std": f"{agg.get('uss_mean', 0):.3f}±{agg.get('uss_std', 0):.3f}",
-                    "lm_var_mean": f"{agg.get('logit_margin_variance_mean', 0):.3f}",
-                    "mean_lm": f"{agg.get('mean_logit_margin_mean', 0):.3f}",
-                    "mean_acc": f"{df['mean_accuracy'].mean():.3f}",
-                    "corr_uss_flip": f"{corr_uss:.3f}" if corr_uss is not None else "N/A",
-                    "corr_lmvar_flip": f"{corr_lmv:.3f}" if corr_lmv is not None else "N/A",
-                    "hidden_instab": hi_count,
-                }
+            # Hidden instability
+            hi_count = sum(
+                1 for r in records
+                if r.get("metrics") and not r["metrics"].get("flip", True)
+                and r["metrics"].get("logit_margin_variance", 0) > LMVAR_INSTABILITY_THRESHOLD
             )
+
+            # Accuracy
+            all_accs = []
+            for rec in records:
+                for vr in rec.get("variant_results", []):
+                    if vr.get("predicted_letter") not in ("ERROR", None):
+                        all_accs.append(int(vr["predicted_letter"] == rec["correct_letter"]))
+
+            rows.append({
+                "Model": _get_model_label(model_tag),
+                "Dataset": DATASET_LABELS.get(dataset, dataset),
+                "N": agg.get("n_samples"),
+                "Accuracy": f"{np.mean(all_accs):.3f}",
+                "Flip Rate": f"{agg.get('prediction_flip_rate', 0):.3f}",
+                "LMVar Mean": f"{agg.get('logit_margin_variance_mean', 0):.2f}",
+                "Corr(LMVar,Flip)": f"{corr_lmv:.3f}" if corr_lmv is not None else "N/A",
+                "Hidden Instab.": f"{hi_count} ({hi_count / agg.get('n_samples', 1) * 100:.1f}%)",
+            })
 
     if not rows:
         print("No results found.")
-        return
+        return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    print("\n=== Aggregate Results ===")
+    print("\n=== Table 1: Aggregate Results ===\n")
     print(df.to_string(index=False))
-    print(f"\n  hidden_instab: flip=False AND logit_margin_variance > {LMVAR_INSTABILITY_THRESHOLD}")
+    print(f"\n  Hidden Instab. = flip=False AND logit_margin_variance > {LMVAR_INSTABILITY_THRESHOLD}")
     return df
 
 
 # ---------------------------------------------------------------------------
-# Plots
+# Fig 1: Flip Rate + LM Variance (grouped bar, two subplots)
 # ---------------------------------------------------------------------------
 
-def _ensure_figures_dir(figures_dir: str):
+def plot_fig1_main_results(all_results: Dict, figures_dir: str):
     os.makedirs(figures_dir, exist_ok=True)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-
-def plot_uss_distributions(all_results: Dict, figures_dir: str):
-    """Box plot of USS distributions across models and datasets.
-
-    Note: USS is computed from entropy, which is unreliable when non-answer
-    tokens fall outside the API top-20 logprobs window. Interpret with caution.
-    """
-    _ensure_figures_dir(figures_dir)
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-
-    for ax_idx, dataset in enumerate(["sciq", "truthfulqa"]):
-        ax = axes[ax_idx]
-        data_by_model = {}
-        for model_tag, datasets in all_results.items():
-            if dataset in datasets:
-                records = datasets[dataset]
-                uss_vals = [
-                    r["metrics"]["uss"]
-                    for r in records
-                    if r.get("metrics") and not np.isnan(r["metrics"].get("uss", float("nan")))
-                ]
-                if uss_vals:
-                    data_by_model[model_tag] = uss_vals
-
-        if not data_by_model:
-            ax.set_title(f"{dataset} (no data)")
-            continue
-
-        labels = list(data_by_model.keys())
-        values = [data_by_model[l] for l in labels]
-        ax.boxplot(values, labels=labels, patch_artist=True)
-        ax.set_title(f"USS Distribution — {dataset}")
-        ax.set_ylabel("Uncertainty Stability Score")
-        ax.set_ylim(-2.0, 1.05)
-        ax.axhline(y=0.5, color="red", linestyle="--", linewidth=0.8, label="threshold=0.5")
-        ax.tick_params(axis="x", rotation=15)
-        ax.legend(fontsize=8)
-
-    plt.tight_layout()
-    out = os.path.join(figures_dir, "uss_distributions.pdf")
-    plt.savefig(out, bbox_inches="tight")
-    plt.close()
-    print(f"Saved: {out}")
-
-
-def plot_flip_rate_bar(all_results: Dict, figures_dir: str):
-    """Bar chart of prediction flip rates."""
-    _ensure_figures_dir(figures_dir)
-    models, datasets_seen = [], set()
-    data: Dict[str, Dict[str, float]] = defaultdict(dict)
-
-    for model_tag, datasets in all_results.items():
-        models.append(model_tag)
-        for dataset, records in datasets.items():
-            datasets_seen.add(dataset)
-            flips = [r["metrics"].get("flip", False) for r in records if r.get("metrics")]
-            data[model_tag][dataset] = float(np.mean(flips)) if flips else 0.0
-
-    datasets_list = sorted(datasets_seen)
-    n_models = len(models)
-    n_datasets = len(datasets_list)
+    models_present = [m for m in MODEL_ORDER if m in all_results]
+    n_models = len(models_present)
+    n_datasets = len(DATASET_ORDER)
     x = np.arange(n_models)
-    width = 0.35
+    width = 0.30
 
-    fig, ax = plt.subplots(figsize=(max(6, n_models * 2), 5))
-    for d_idx, dataset in enumerate(datasets_list):
-        vals = [data[m].get(dataset, 0.0) for m in models]
-        offset = (d_idx - (n_datasets - 1) / 2) * width
-        bars = ax.bar(x + offset, vals, width, label=dataset)
-        for bar, val in zip(bars, vals):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.005,
-                f"{val:.2f}",
-                ha="center", va="bottom", fontsize=8,
-            )
+    for ax, metric_key, ylabel, title in [
+        (ax1, "flip_rate", "Prediction Flip Rate", "Prediction Flip Rate"),
+        (ax2, "lm_var", "Logit Margin Variance (mean)", "Logit Margin Variance"),
+    ]:
+        for d_idx, dataset in enumerate(DATASET_ORDER):
+            vals = []
+            for model_tag in models_present:
+                records = all_results.get(model_tag, {}).get(dataset, [])
+                metrics_list = [r["metrics"] for r in records if r.get("metrics")]
+                if metric_key == "flip_rate":
+                    v = np.mean([m["flip"] for m in metrics_list]) if metrics_list else 0
+                else:
+                    v = np.mean([m["logit_margin_variance"] for m in metrics_list]) if metrics_list else 0
+                vals.append(v)
 
-    ax.set_xlabel("Model")
-    ax.set_ylabel("Prediction Flip Rate")
-    ax.set_title("Prediction Flip Rate by Model and Dataset")
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, rotation=15, ha="right")
-    ax.set_ylim(0, 1.0)
-    ax.legend()
+            offset = (d_idx - (n_datasets - 1) / 2) * width
+            bars = ax.bar(x + offset, vals, width,
+                          label=DATASET_LABELS.get(dataset, dataset),
+                          color=DATASET_COLORS[dataset], alpha=0.8)
+            for bar, val in zip(bars, vals):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                        f"{val:.3f}" if metric_key == "flip_rate" else f"{val:.2f}",
+                        ha="center", va="bottom", fontsize=8)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([_get_model_label(m) for m in models_present])
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.legend()
+        if metric_key == "flip_rate":
+            ax.set_ylim(0, min(1.0, max(vals) * 1.5 + 0.05))
+
     plt.tight_layout()
-
-    out = os.path.join(figures_dir, "flip_rate_bar.pdf")
+    out = os.path.join(figures_dir, "fig1_main_results.pdf")
     plt.savefig(out, bbox_inches="tight")
     plt.close()
     print(f"Saved: {out}")
 
 
-def plot_lmvar_flip_comparison(all_results: Dict, figures_dir: str):
-    """Box plot: logit_margin_variance grouped by flip status (True vs False).
+# ---------------------------------------------------------------------------
+# Fig 2: LMVar vs Flip status (box plot, by dataset)
+# ---------------------------------------------------------------------------
 
-    Shows whether samples with prediction flips have higher confidence instability,
-    directly addressing the 'uncertainty variance correlates with flip' hypothesis.
-    One figure per (model, dataset) combination.
-    """
-    _ensure_figures_dir(figures_dir)
+def plot_fig2_lmvar_vs_flip(all_results: Dict, figures_dir: str):
+    os.makedirs(figures_dir, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 
-    for model_tag, datasets in all_results.items():
-        for dataset, records in datasets.items():
-            lmv_no_flip, lmv_flip = [], []
-            for rec in records:
-                m = rec.get("metrics", {})
-                lmv = m.get("logit_margin_variance", float("nan"))
-                flip = m.get("flip", None)
-                if flip is None or np.isnan(lmv):
-                    continue
-                if flip:
-                    lmv_flip.append(lmv)
-                else:
-                    lmv_no_flip.append(lmv)
+    models_present = [m for m in MODEL_ORDER if m in all_results]
 
-            if not lmv_no_flip and not lmv_flip:
+    for ax_idx, dataset in enumerate(DATASET_ORDER):
+        ax = axes[ax_idx]
+        positions = []
+        data = []
+        colors = []
+        labels_done = set()
+        tick_positions = []
+        tick_labels = []
+
+        for m_idx, model_tag in enumerate(models_present):
+            records = all_results.get(model_tag, {}).get(dataset, [])
+            if not records:
                 continue
 
-            fig, ax = plt.subplots(figsize=(6, 5))
-            data = []
-            labels = []
-            if lmv_no_flip:
-                data.append(lmv_no_flip)
-                labels.append(f"No Flip\n(n={len(lmv_no_flip)})")
-            if lmv_flip:
-                data.append(lmv_flip)
-                labels.append(f"Flip\n(n={len(lmv_flip)})")
+            lmv_no_flip = [r["metrics"]["logit_margin_variance"]
+                           for r in records if r.get("metrics") and not r["metrics"]["flip"]]
+            lmv_flip = [r["metrics"]["logit_margin_variance"]
+                        for r in records if r.get("metrics") and r["metrics"]["flip"]]
 
-            bp = ax.boxplot(data, labels=labels, patch_artist=True, notch=False)
-            colors = ["steelblue", "tomato"]
-            for patch, color in zip(bp["boxes"], colors[: len(data)]):
+            base = m_idx * 3
+            if lmv_no_flip:
+                positions.append(base)
+                data.append(lmv_no_flip)
+                colors.append("steelblue")
+            if lmv_flip:
+                positions.append(base + 1)
+                data.append(lmv_flip)
+                colors.append("tomato")
+            tick_positions.append(base + 0.5)
+            tick_labels.append(_get_model_label(model_tag))
+
+        if data:
+            bp = ax.boxplot(data, positions=positions, widths=0.7,
+                            patch_artist=True, notch=False)
+            for patch, color in zip(bp["boxes"], colors):
                 patch.set_facecolor(color)
                 patch.set_alpha(0.7)
 
-            ax.axhline(
-                y=LMVAR_INSTABILITY_THRESHOLD,
-                color="gray", linestyle="--", linewidth=0.8,
-                label=f"instability threshold={LMVAR_INSTABILITY_THRESHOLD}",
-            )
+        ax.axhline(y=LMVAR_INSTABILITY_THRESHOLD, color="gray",
+                    linestyle="--", linewidth=0.8, label=f"threshold={LMVAR_INSTABILITY_THRESHOLD}")
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels)
+        ax.set_title(f"{DATASET_LABELS.get(dataset, dataset)}")
+        if ax_idx == 0:
             ax.set_ylabel("Logit Margin Variance")
-            ax.set_title(
-                f"Confidence Instability by Flip Status\n{model_tag} / {dataset}"
-            )
-            ax.legend(fontsize=8)
-            plt.tight_layout()
 
-            safe_model = model_tag.replace("/", "_")
-            out = os.path.join(figures_dir, f"lmvar_flip_comparison_{safe_model}_{dataset}.pdf")
-            plt.savefig(out, bbox_inches="tight")
-            plt.close()
-            print(f"Saved: {out}")
+        # Manual legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor="steelblue", alpha=0.7, label="No Flip"),
+            Patch(facecolor="tomato", alpha=0.7, label="Flip"),
+        ]
+        ax.legend(handles=legend_elements, fontsize=9)
+
+    fig.suptitle("Confidence Instability by Flip Status", fontsize=13, y=1.02)
+    plt.tight_layout()
+    out = os.path.join(figures_dir, "fig2_lmvar_vs_flip.pdf")
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out}")
 
 
-def plot_per_variant_accuracy(all_results: Dict, figures_dir: str):
-    """Line plot of accuracy per prompt variant."""
-    _ensure_figures_dir(figures_dir)
+# ---------------------------------------------------------------------------
+# Fig 3: Per-Variant Accuracy (line plot, by dataset)
+# ---------------------------------------------------------------------------
 
-    for model_tag, datasets in all_results.items():
-        for dataset, records in datasets.items():
-            variant_accs: Dict[int, List[int]] = defaultdict(list)
-            for rec in records:
-                correct = rec.get("correct_letter", "")
-                for vr in rec.get("variant_results", []):
-                    v = vr.get("variant")
-                    pred = vr.get("predicted_letter")
-                    if pred not in ("ERROR", None) and v is not None:
-                        variant_accs[v].append(int(pred == correct))
+def plot_fig3_variant_accuracy(all_results: Dict, figures_dir: str):
+    os.makedirs(figures_dir, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
 
-            if not variant_accs:
+    models_present = [m for m in MODEL_ORDER if m in all_results]
+    variants = [0, 1, 2, 3]
+    variant_labels = ["V0\nBaseline", "V1\nReworded", "V2\nQuestion-first", "V3\nMinimal"]
+
+    for ax_idx, dataset in enumerate(DATASET_ORDER):
+        ax = axes[ax_idx]
+        for model_tag in models_present:
+            records = all_results.get(model_tag, {}).get(dataset, [])
+            if not records:
                 continue
 
-            variants = sorted(variant_accs.keys())
-            means = [np.mean(variant_accs[v]) for v in variants]
-            stds = [np.std(variant_accs[v]) / np.sqrt(len(variant_accs[v])) for v in variants]
+            means = []
+            stds = []
+            for v in variants:
+                accs = [
+                    int(r["variant_results"][v]["predicted_letter"] == r["correct_letter"])
+                    for r in records if len(r.get("variant_results", [])) > v
+                    and r["variant_results"][v].get("predicted_letter") not in ("ERROR", None)
+                ]
+                means.append(np.mean(accs) if accs else 0)
+                stds.append(np.std(accs) / np.sqrt(len(accs)) if len(accs) > 1 else 0)
 
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.errorbar(variants, means, yerr=stds, marker="o", capsize=4)
-            ax.set_xticks(variants)
-            ax.set_xticklabels([f"V{v}" for v in variants])
-            ax.set_xlabel("Prompt Variant")
-            ax.set_ylabel("Accuracy")
-            ax.set_title(f"Accuracy per Variant — {model_tag} / {dataset}")
-            ax.set_ylim(0, 1.0)
-            plt.tight_layout()
+            color = MODEL_COLORS[model_tag]
+            ax.errorbar(variants, means, yerr=stds, marker="o", capsize=4,
+                        label=_get_model_label(model_tag), color=color, linewidth=2)
 
-            safe_model = model_tag.replace("/", "_")
-            out = os.path.join(figures_dir, f"variant_acc_{safe_model}_{dataset}.pdf")
-            plt.savefig(out, bbox_inches="tight")
-            plt.close()
-            print(f"Saved: {out}")
-
-
-def plot_logit_margin_by_variant(all_results: Dict, figures_dir: str):
-    """Box plot of logit margin distribution per prompt variant.
-
-    Shows how the model's confidence (top-1 vs top-2 logit gap) changes across
-    the four prompt variants, revealing which variant induces most/least confidence.
-    One figure per (model, dataset) combination.
-    """
-    _ensure_figures_dir(figures_dir)
-
-    for model_tag, datasets in all_results.items():
-        for dataset, records in datasets.items():
-            variant_margins: Dict[int, List[float]] = defaultdict(list)
-            for rec in records:
-                for vr in rec.get("variant_results", []):
-                    v = vr.get("variant")
-                    lm = vr.get("logit_margin", float("nan"))
-                    if v is not None and not np.isnan(lm):
-                        variant_margins[v].append(lm)
-
-            if not variant_margins:
-                continue
-
-            variants = sorted(variant_margins.keys())
-            data = [variant_margins[v] for v in variants]
-            labels = [f"V{v}" for v in variants]
-
-            fig, ax = plt.subplots(figsize=(7, 4))
-            bp = ax.boxplot(data, labels=labels, patch_artist=True)
-            for patch in bp["boxes"]:
-                patch.set_facecolor("steelblue")
-                patch.set_alpha(0.6)
-
-            ax.set_xlabel("Prompt Variant")
-            ax.set_ylabel("Logit Margin (top-1 − top-2)")
-            ax.set_title(
-                f"Confidence (Logit Margin) per Variant\n{model_tag} / {dataset}"
-            )
-            plt.tight_layout()
-
-            safe_model = model_tag.replace("/", "_")
-            out = os.path.join(figures_dir, f"logit_margin_by_variant_{safe_model}_{dataset}.pdf")
-            plt.savefig(out, bbox_inches="tight")
-            plt.close()
-            print(f"Saved: {out}")
-
-
-def plot_logit_margin_variance_distribution(all_results: Dict, figures_dir: str):
-    """Histogram of logit_margin_variance, SciQ vs TruthfulQA overlaid.
-
-    Shows the overall distribution of confidence instability and the difference
-    between datasets. One figure per model.
-    """
-    _ensure_figures_dir(figures_dir)
-
-    dataset_colors = {"sciq": "steelblue", "truthfulqa": "tomato"}
-
-    for model_tag, datasets in all_results.items():
-        collected = {}
-        for dataset, records in datasets.items():
-            vals = [
-                r["metrics"]["logit_margin_variance"]
-                for r in records
-                if r.get("metrics") and not np.isnan(r["metrics"].get("logit_margin_variance", float("nan")))
-            ]
-            if vals:
-                collected[dataset] = vals
-
-        if not collected:
-            continue
-
-        _, ax = plt.subplots(figsize=(8, 4))
-        all_vals = [v for vals in collected.values() for v in vals]
-        bins = np.linspace(0, min(np.percentile(all_vals, 98), 60), 40)
-
-        for dataset, vals in collected.items():
-            color = dataset_colors.get(dataset, "gray")
-            ax.hist(
-                vals, bins=bins, alpha=0.6, color=color,
-                label=f"{dataset} (n={len(vals)}, mean={np.mean(vals):.2f})",
-                density=True,
-            )
-
-        ax.axvline(
-            x=LMVAR_INSTABILITY_THRESHOLD,
-            color="black", linestyle="--", linewidth=0.9,
-            label=f"instability threshold={LMVAR_INSTABILITY_THRESHOLD}",
-        )
-        ax.set_xlabel("Logit Margin Variance")
-        ax.set_ylabel("Density")
-        ax.set_title(f"Distribution of Confidence Instability — {model_tag}")
+        ax.set_xticks(variants)
+        ax.set_xticklabels(variant_labels, fontsize=9)
+        ax.set_title(DATASET_LABELS.get(dataset, dataset))
+        ax.set_ylim(0.4, 1.02)
         ax.legend(fontsize=9)
-        plt.tight_layout()
+        if ax_idx == 0:
+            ax.set_ylabel("Accuracy")
 
-        safe_model = model_tag.replace("/", "_")
-        out = os.path.join(figures_dir, f"lmvar_distribution_{safe_model}.pdf")
-        plt.savefig(out, bbox_inches="tight")
-        plt.close()
-        print(f"Saved: {out}")
+    fig.suptitle("Accuracy per Prompt Variant", fontsize=13, y=1.02)
+    plt.tight_layout()
+    out = os.path.join(figures_dir, "fig3_variant_accuracy.pdf")
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out}")
+
+
+# ---------------------------------------------------------------------------
+# Fig 4: LM Variance distribution (histogram, by dataset)
+# ---------------------------------------------------------------------------
+
+def plot_fig4_lmvar_distribution(all_results: Dict, figures_dir: str):
+    os.makedirs(figures_dir, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+
+    models_present = [m for m in MODEL_ORDER if m in all_results]
+
+    for ax_idx, dataset in enumerate(DATASET_ORDER):
+        ax = axes[ax_idx]
+        all_vals = []
+        for model_tag in models_present:
+            records = all_results.get(model_tag, {}).get(dataset, [])
+            vals = [r["metrics"]["logit_margin_variance"]
+                    for r in records if r.get("metrics")]
+            all_vals.extend(vals)
+
+        if not all_vals:
+            continue
+        bins = np.linspace(0, min(np.percentile(all_vals, 97), 30), 35)
+
+        for model_tag in models_present:
+            records = all_results.get(model_tag, {}).get(dataset, [])
+            vals = [r["metrics"]["logit_margin_variance"]
+                    for r in records if r.get("metrics")]
+            if not vals:
+                continue
+            color = MODEL_COLORS[model_tag]
+            ax.hist(vals, bins=bins, alpha=0.5, color=color,
+                    label=f"{_get_model_label(model_tag)} (mean={np.mean(vals):.2f})",
+                    density=True)
+
+        ax.axvline(x=LMVAR_INSTABILITY_THRESHOLD, color="black",
+                    linestyle="--", linewidth=0.9, label=f"threshold={LMVAR_INSTABILITY_THRESHOLD}")
+        ax.set_xlabel("Logit Margin Variance")
+        ax.set_title(DATASET_LABELS.get(dataset, dataset))
+        ax.legend(fontsize=8)
+        if ax_idx == 0:
+            ax.set_ylabel("Density")
+
+    fig.suptitle("Distribution of Confidence Instability", fontsize=13, y=1.02)
+    plt.tight_layout()
+    out = os.path.join(figures_dir, "fig4_lmvar_distribution.pdf")
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out}")
+
+
+# ---------------------------------------------------------------------------
+# Fig 5: Hidden instability scatter
+# ---------------------------------------------------------------------------
+
+def plot_fig5_hidden_instability(all_results: Dict, figures_dir: str):
+    os.makedirs(figures_dir, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    models_present = [m for m in MODEL_ORDER if m in all_results]
+
+    for ax_idx, dataset in enumerate(DATASET_ORDER):
+        ax = axes[ax_idx]
+
+        for model_tag in models_present:
+            records = all_results.get(model_tag, {}).get(dataset, [])
+            if not records:
+                continue
+
+            x_no_flip, y_no_flip = [], []
+            x_flip, y_flip = [], []
+
+            for r in records:
+                m = r.get("metrics", {})
+                if not m:
+                    continue
+                mean_lm = m.get("mean_logit_margin", 0)
+                lmvar = m.get("logit_margin_variance", 0)
+                if m.get("flip", False):
+                    x_flip.append(mean_lm)
+                    y_flip.append(lmvar)
+                else:
+                    x_no_flip.append(mean_lm)
+                    y_no_flip.append(lmvar)
+
+            color = MODEL_COLORS[model_tag]
+            label = _get_model_label(model_tag)
+            ax.scatter(x_no_flip, y_no_flip, c=color, marker="o", alpha=0.3, s=20,
+                       label=f"{label} (no flip)")
+            ax.scatter(x_flip, y_flip, c=color, marker="x", alpha=0.8, s=30,
+                       label=f"{label} (flip)")
+
+        ax.axhline(y=LMVAR_INSTABILITY_THRESHOLD, color="gray",
+                    linestyle="--", linewidth=0.8)
+        ax.set_xlabel("Mean Logit Margin")
+        ax.set_ylabel("Logit Margin Variance")
+        ax.set_title(DATASET_LABELS.get(dataset, dataset))
+        ax.legend(fontsize=7, ncol=2, loc="upper right")
+
+    fig.suptitle("Hidden Instability: Stable Predictions with Fluctuating Confidence",
+                 fontsize=12, y=1.02)
+    plt.tight_layout()
+    out = os.path.join(figures_dir, "fig5_hidden_instability.pdf")
+    plt.savefig(out, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out}")
 
 
 # ---------------------------------------------------------------------------
@@ -498,14 +462,13 @@ def main(results_dir: str, figures_dir: str):
     # Summary table
     print_summary_table(all_results)
 
-    # Plots
-    print("\nGenerating plots …")
-    plot_uss_distributions(all_results, figures_dir)
-    plot_flip_rate_bar(all_results, figures_dir)
-    plot_lmvar_flip_comparison(all_results, figures_dir)
-    plot_per_variant_accuracy(all_results, figures_dir)
-    plot_logit_margin_by_variant(all_results, figures_dir)
-    plot_logit_margin_variance_distribution(all_results, figures_dir)
+    # Figures
+    print("\nGenerating figures …")
+    plot_fig1_main_results(all_results, figures_dir)
+    plot_fig2_lmvar_vs_flip(all_results, figures_dir)
+    plot_fig3_variant_accuracy(all_results, figures_dir)
+    plot_fig4_lmvar_distribution(all_results, figures_dir)
+    plot_fig5_hidden_instability(all_results, figures_dir)
 
     print(f"\nAll figures saved to: {figures_dir}")
 

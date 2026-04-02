@@ -1,64 +1,64 @@
-# ST5230 Project Experiment Spec
+# ST5230 Project: Prompt Sensitivity of Uncertainty Estimates in LLMs
 
 ## Research Question
 How sensitive are LLM uncertainty estimates to semantically equivalent prompt perturbations?
 
-We study whether semantically equivalent prompt variants can change model predictions and uncertainty estimates on the same input.
-
 ## Models
-- Llama-3 8B Instruct
-- Llama-3 70B Instruct
-- GPT-5
+| Role | Model | Params | Source |
+|------|-------|--------|--------|
+| Small open-source | `mistralai/ministral-3b-2512` | 3B | OpenRouter |
+| Medium open-source | `meta-llama/llama-3.1-8b-instruct` | 8B | OpenRouter |
+| Large proprietary | `openai/gpt-4o` | undisclosed | OpenRouter |
+
+See `docs/model_changes.txt` for why these models were chosen over the originally proposed ones.
 
 ## Datasets
-- SciQ
-- TruthfulQA
+- **SciQ** — 250 samples (science multiple-choice)
+- **TruthfulQA** — 250 samples (common misconception multiple-choice)
 
-Planned sample size:
-- SciQ: 200–300 samples
-- TruthfulQA: 200–300 samples
+## Prompt Variants
+Each sample is evaluated under 4 semantically equivalent prompt formats:
+- V0: Baseline (instruction-first, `A)` format)
+- V1: Reworded (different phrasing, `A.` format)
+- V2: Question-first (`(A)` format)
+- V3: Minimal (no instruction, `A:` format)
 
-We will fix the random seed and save the sampled subset for reproducibility.
+## Key Metrics
+- **Prediction Flip Rate** — how often the predicted answer changes across prompts
+- **Logit Margin Variance** — variance of (top-1 minus top-2) logit across prompts
+- **Hidden Instability** — samples where prediction is stable but confidence fluctuates
 
-## Output Task Format
-For each sample, the model must return a final answer in a structured format.
+## Quick Start
+```bash
+pip install -r requirements.txt
 
-Planned output format:
-{"answer": "A"}
+# Prepare data (once)
+python sources/data_utils.py
 
-For all experiments, we aim to use a fixed answer space whenever possible, so that uncertainty can be compared consistently across prompt variants.
+# Run experiments (example)
+python run_experiment.py --model meta-llama/llama-3.1-8b-instruct --dataset sciq --openrouter
 
-## Prompt Variant Principle
-Prompt variants must be semantically equivalent.
+# Analyze results
+python analyze_results.py
+```
 
-They may differ in:
-- wording
-- sentence order
-- formatting emphasis
+See `steps.txt` for full reproduction instructions.
 
-They must NOT differ in:
-- task meaning
-- answer space
-- extra hints
-- reasoning requirements
-
-
-## UQ_ICL
-### Dependencies
-This code is written in Python. To use it you will need:
-- Numpy - 1.16.2
-- Scipy - 1.2.1
-- pandas - 0.23.4
-- Transformers - 4.35.0
-- PyTorch 1.10.0+
-- datasets - 2.15.0
-
-### Usage
-#### Data
-The data can be downloaded from the file by datasets Python library.
-
-#### Test Models
-There are five datasets, you can test the results of different datasets with using the executable files (*cola.sh, ag_news.sh, financial.sh, ssh.sh, sentiment.sh*) provided.
-
-Note that the parameter value ranges are hyper-parameters, and different range 
-may result different performance in different dataset, be sure to tune hyper-parameters carefully. 
+## Project Structure
+```
+├── run_experiment.py           # Main experiment runner
+├── analyze_results.py          # Analysis + 5 figures
+├── sources/
+│   ├── data_utils.py           # Dataset download & sampling
+│   ├── model_inference.py      # API inference (OpenRouter)
+│   ├── prompt_variants.py      # 4 prompt variant definitions
+│   └── uncertainty_metrics.py  # USS, Flip Rate, LM Variance
+├── outputs/
+│   ├── data/                   # Sampled datasets
+│   ├── results/                # Per-model inference results
+│   └── figures/                # Generated PDF figures
+├── docs/
+│   ├── Group3_Project_Proposal.pdf
+│   └── model_changes.txt       # Model selection decision log
+└── steps.txt                   # Reproduction guide (中文)
+```

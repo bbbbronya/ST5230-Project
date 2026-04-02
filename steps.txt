@@ -1,110 +1,141 @@
-代码逻辑完整，路径正确。以下是完整运行步骤：
-                                                                                                                                                                                                                             
-  ---
-  运行步骤                                                                                                                                                                                                                   
-                                                                                                                                                                                                                               环境要求                                                                                                                                                                                                                   
-                                                                                                                                                                                                                             
-  ┌──────────────────────────────────┬──────────────────────────────────────────┐
-  │              模型                │                 硬件需求                 │
-  ├──────────────────────────────────┼──────────────────────────────────────────┤
-  │ Llama-3 8B（本地）               │ GPU ≥ 16GB VRAM（8-bit量化可降至约10GB） │
-  ├──────────────────────────────────┼──────────────────────────────────────────┤
-  │ Llama-3 70B（本地）              │ GPU ≥ 80GB VRAM（多卡或4-bit量化）       │
-  ├──────────────────────────────────┼──────────────────────────────────────────┤
-  │ GPT-4o / GPT-5（OpenAI API）     │ 只需 OpenAI API Key，无需GPU             │
-  ├──────────────────────────────────┼──────────────────────────────────────────┤
-  │ 任意模型（OpenRouter API）       │ 只需 OpenRouter API Key，无需GPU         │
-  └──────────────────────────────────┴──────────────────────────────────────────┘
+ST5230 Project — 复现步骤
+==========================
+最后更新: 2026-04-02
 
-  ---
-  Step 1 — 安装依赖
+研究问题: LLM 的 uncertainty estimates 对语义等价的 prompt 变体有多敏感？
 
+模型（最终选定）:
+  1. mistralai/ministral-3b-2512   (开源, 3B)
+  2. meta-llama/llama-3.1-8b-instruct  (开源, 8B)
+  3. openai/gpt-4o                 (闭源)
+
+数据集: SciQ (250 samples), TruthfulQA (250 samples)
+
+模型替换说明: 见 docs/model_changes.txt
+
+---
+前置条件
+---
+  - Python 3.10+
+  - OpenRouter API Key (存放在项目根目录 .env 文件中)
+
+  .env 文件格式:
+    OPENROUTER_API_KEY=sk-or-v1-xxxxxxxx
+
+---
+Step 1 — 安装依赖
+---
   cd ST5230-Project
   pip install -r requirements.txt
 
-  ▎ 如果不跑 Llama，可以跳过 torch、transformers、bitsandbytes；只用 API 的话最小依赖是 openai python-dotenv pandas numpy scipy matplotlib seaborn datasets。
+  最小依赖（只用 API，不跑本地模型）:
+    pip install openai python-dotenv numpy pandas scipy matplotlib
 
-  ---
-  Step 2 — 准备数据（只需运行一次）
-
+---
+Step 2 — 准备数据（只需运行一次）
+---
   python sources/data_utils.py
 
-  这会从 HuggingFace 下载 SciQ 和 TruthfulQA，各采样 250 条，保存到：
-  outputs/data/sciq_sample.json
-  outputs/data/truthfulqa_sample.json
+  从 HuggingFace 下载 SciQ 和 TruthfulQA，各采样 250 条，保存到:
+    outputs/data/sciq_sample.json
+    outputs/data/truthfulqa_sample.json
 
-  ---
-  Step 3 — 运行实验
+  注: 如果这两个文件已存在则会直接复用，不会重新采样。
 
-  每条命令对应一个 (模型 × 数据集) 组合，共需跑 6 次（3模型 × 2数据集）。
+---
+Step 3 — 运行实验
+---
+  每条命令对应一个 (模型 × 数据集) 组合，共 6 次。
+  所有模型通过 OpenRouter API 调用，无需 GPU。
 
-  OpenRouter（推荐，无需GPU，支持 Llama / Claude / Gemini 等大量模型）：
-  # API Key 已保存在 .env 文件中，无需额外设置
+  # Ministral-3B (开源小模型, 3B)
+  python run_experiment.py --model mistralai/ministral-3b-2512 --dataset sciq --openrouter
+  python run_experiment.py --model mistralai/ministral-3b-2512 --dataset truthfulqa --openrouter
 
+  # Llama-3.1-8B (开源中等模型, 8B)
   python run_experiment.py --model meta-llama/llama-3.1-8b-instruct --dataset sciq --openrouter
   python run_experiment.py --model meta-llama/llama-3.1-8b-instruct --dataset truthfulqa --openrouter
 
-  ▎ OpenRouter 模型名称查询：https://openrouter.ai/models
-    常用模型示例：
-      meta-llama/llama-3.1-8b-instruct
-      meta-llama/llama-3.3-70b-instruct
-      anthropic/claude-3.5-sonnet
-      google/gemini-flash-1.5
+  # GPT-4o (闭源大模型)
+  python run_experiment.py --model openai/gpt-4o --dataset sciq --openrouter
+  python run_experiment.py --model openai/gpt-4o --dataset truthfulqa --openrouter
 
-  ---
-  GPT 系列（需要 OpenAI API Key）：
-  export OPENAI_API_KEY="sk-..."   # Linux/Mac
-  # 或 Windows: set OPENAI_API_KEY=sk-...
+  快速测试（先跑 3 条验证流程）:
+    加 --max_samples 3
 
-  python run_experiment.py --model gpt-4o --dataset sciq
-  python run_experiment.py --model gpt-4o --dataset truthfulqa
+  断点续跑:
+    中断后直接重新执行同一条命令，已处理的样本会自动跳过。
+    如需重新开始: 加 --no_resume
 
-  Llama-3 8B 本地（需要 HuggingFace 访问权限 + GPU）：
-  huggingface-cli login   # 输入 HF token（Llama-3 需要申请访问权限）
+  结果保存到 outputs/results/<model_tag>/ 目录:
+    - <dataset>.jsonl        每行一条样本的完整推理结果
+    - <dataset>_summary.json  汇总统计
 
-  python run_experiment.py --model meta-llama/Meta-Llama-3-8B-Instruct --dataset sciq --load_in_8bit
-  python run_experiment.py --model meta-llama/Meta-Llama-3-8B-Instruct --dataset truthfulqa --load_in_8bit
-
-  Llama-3 70B 本地：
-  python run_experiment.py --model meta-llama/Meta-Llama-3-70B-Instruct --dataset sciq --load_in_4bit
-  python run_experiment.py --model meta-llama/Meta-Llama-3-70B-Instruct --dataset truthfulqa --load_in_4bit
-
-  ▎ 断点续跑：中断后直接重新执行同一条命令，已处理的样本会自动跳过。
-
-  ▎ 快速测试（先跑10条验证流程）：加 --max_samples 10
-
-  结果保存到 outputs/results/<model>/，格式为每行一条 JSON 的 .jsonl 文件。
-
-  ---
-  Step 4 — 分析结果
-
+---
+Step 4 — 分析结果
+---
   python analyze_results.py
 
-  输出：
-  - 终端打印汇总表（Flip Rate、USS、Entropy、Accuracy、相关性等）
-  - outputs/figures/ 下生成 5 类 PDF 图表
+  输出:
+    终端打印 Table 1 汇总表（Flip Rate, LM Variance, Accuracy, 相关性等）
 
-  ---
-  当前完成度
+    outputs/figures/ 下生成 5 张 PDF 图表:
+      fig1_main_results.pdf       — Flip Rate + LM Variance 跨模型对比
+      fig2_lmvar_vs_flip.pdf      — LM Variance vs Flip 状态 (box plot)
+      fig3_variant_accuracy.pdf   — 各 Prompt Variant 的准确率
+      fig4_lmvar_distribution.pdf — LM Variance 分布直方图
+      fig5_hidden_instability.pdf — Hidden Instability 散点图
 
-  ┌─────────────────────────────────────────┬─────────┐
-  │                  模块                   │  状态   │
-  ├─────────────────────────────────────────┼─────────┤
-  │ 数据加载（SciQ + TruthfulQA）           │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ 4种prompt变体                           │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ Llama-3 推理（logit直接提取）           │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ OpenAI 推理（logprobs）                 │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ OpenRouter 支持（--openrouter 参数）    │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ USS / Flip Rate / Logit Margin Variance │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ 增量保存 + 断点续跑                     │ ✅ 完整 │
-  ├─────────────────────────────────────────┼─────────┤
-  │ 分析脚本 + 可视化                       │ ✅ 完整 │
-  └─────────────────────────────────────────┴─────────┘
+---
+项目结构
+---
+  ST5230-Project/
+  ├── .env                        # OpenRouter API Key (不要提交到 git)
+  ├── requirements.txt            # Python 依赖
+  ├── run_experiment.py           # 实验主入口
+  ├── analyze_results.py          # 分析 + 可视化
+  ├── sources/
+  │   ├── data_utils.py           # 数据下载与采样
+  │   ├── model_inference.py      # 模型推理 (API + 本地)
+  │   ├── prompt_variants.py      # 4 种 prompt 变体定义
+  │   └── uncertainty_metrics.py  # USS, Flip Rate, LM Variance 等指标
+  ├── outputs/
+  │   ├── data/                   # 采样后的数据集 (json)
+  │   ├── results/                # 每个模型的推理结果 (jsonl + summary)
+  │   └── figures/                # 分析图表 (pdf)
+  ├── docs/
+  │   ├── Group3_Project_Proposal.pdf
+  │   └── model_changes.txt       # 模型替换决策记录
+  └── steps.txt                   # 本文件
 
-  目前是功能完整的实验。你先过一遍后，如果有需要调整的地方（比如 prompt 措辞、采样数量、新增模型等）随时告诉我。
+---
+Prompt Variants 说明
+---
+  每个样本使用 4 种语义等价的 prompt 变体:
+
+  V0 (Baseline)      指令在前, A) 格式, "Answer:"
+  V1 (Reworded)      不同措辞, A. 格式, "Your answer:"
+  V2 (Question-first) 问题在前, (A) 格式, "Correct option:"
+  V3 (Minimal)       无指令句, A: 格式, "Answer:"
+
+  详见 sources/prompt_variants.py
+
+---
+关键指标
+---
+  1. Prediction Flip Rate   预测在 prompt 变体间翻转的比例
+  2. Logit Margin Variance  top-1 与 top-2 logit 差值的方差 (衡量 confidence 波动)
+  3. Hidden Instability     预测不变但 LM Variance > 5.0 的样本 (隐藏的不稳定性)
+  4. Per-Variant Accuracy   每种 prompt 变体下的准确率
+
+  注: USS (Uncertainty Stability Score) 和 Entropy 在汇总数据中也有计算，
+  但由于 API 模型 top_logprobs 限制导致 floor 效应，在报告中以
+  Logit Margin Variance 作为主要 uncertainty stability 指标。
+
+---
+注意事项
+---
+  1. .env 文件包含 API Key，请勿提交到 git
+  2. OpenRouter 免费额度有限，完整跑完 6 组实验约需 3000+ API 调用
+  3. 实验结果已保存在 outputs/results/ 中，分析可直接运行 Step 4
+  4. 如需更换模型或调整参数，参考 docs/model_changes.txt 中的决策记录

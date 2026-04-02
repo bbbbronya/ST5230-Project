@@ -1,5 +1,5 @@
 """
-Model inference classes for Llama-3 (open-source) and OpenAI GPT (API).
+Model inference classes for API-based and local models.
 
 Both classes expose a single method:
 
@@ -11,8 +11,11 @@ where InferenceResult contains:
     logit_margin     : float        – top-1 minus top-2 logit (or log-prob)
     answer_logits    : dict[str,float] – raw logit / log-prob for each letter
 
-For Llama-3 we extract logits directly from the model's first generated token.
-For OpenAI we use the `logprobs` / `top_logprobs` fields from the chat completion.
+For Llama-3 (local) we extract logits directly from the model's first generated token.
+For API models (GPT, Llama, Qwen via OpenRouter) we use the `logprobs` / `top_logprobs`
+fields from the chat completion. Llama/GPT use top_logprobs=20; Qwen uses 5
+(Alibaba provider hard-limit). The value does not affect returned logprob
+magnitudes, only how many tokens are listed.
 """
 
 from __future__ import annotations
@@ -182,23 +185,16 @@ class LlamaModel:
 
 class OpenAIModel:
     """
-    Wraps the OpenAI Chat Completions API.
+    Wraps the OpenAI Chat Completions API (also used for OpenRouter).
 
-    Requires OPENAI_API_KEY to be set in the environment (or passed via
-    api_key parameter).
+    For uncertainty estimation we request top_logprobs on the first generated
+    token. Llama/GPT use top_logprobs=20; Qwen uses 5 (Alibaba provider
+    hard-limit). If a letter is not in the top-N, we assign a very low
+    log-prob (LOG_PROB_FLOOR) as a conservative estimate.
 
-    For uncertainty estimation we use top_logprobs=20 on the first generated
-    token. If a letter is not in the top-20, we assign a very low log-prob
-    (LOG_PROB_FLOOR) as a conservative estimate.
-
-    Parameters
-    ----------
-    model : str
-        OpenAI model name, e.g. "gpt-4o", "gpt-4-turbo", "gpt-5".
-    api_key : str, optional
-        Overrides the OPENAI_API_KEY environment variable.
-    max_retries : int
-        Number of retry attempts on transient API errors.
+    For Qwen models, thinking mode is automatically disabled by prepending
+    "/no_think\n" to the user message so that the first output token is the
+    answer letter (not a thinking token).
     """
 
     LOG_PROB_FLOOR = -20.0  # stand-in for letters missing from top_logprobs
@@ -223,27 +219,36 @@ class OpenAIModel:
             client_kwargs["base_url"] = base_url
         self.client = _openai.OpenAI(**client_kwargs)
         self.model = model
+        self._is_qwen = "qwen" in model.lower()
+        # Qwen provider (Alibaba) hard-limits top_logprobs to 5;
+        # Llama and GPT providers support up to 20.
+        self._top_logprobs = 5 if self._is_qwen else 20
 
     def infer(self, prompt_text: str, num_options: int = 4) -> InferenceResult:
         import time
 
         active_letters = LETTERS[:num_options]
 
-        for attempt in range(3):
+        # For Qwen models, prepend /no_think to disable thinking mode so the
+        # first output token is the answer letter, not a reasoning token.
+        user_content = f"/no_think\n{prompt_text}" if self._is_qwen else prompt_text
+
+        for attempt in range(5):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt_text}],
+                    messages=[{"role": "user", "content": user_content}],
                     max_tokens=1,
                     temperature=0.0,
                     logprobs=True,
-                    top_logprobs=20,
+                    top_logprobs=self._top_logprobs,
+                    extra_body={"provider": {"require_parameters": True}},
                 )
                 break
             except Exception as exc:
-                if attempt == 2:
+                if attempt == 4:
                     raise
-                wait = 2 ** attempt
+                wait = 5 * (2 ** attempt)  # 5, 10, 20, 40s
                 print(f"  API error ({exc}), retrying in {wait}s …")
                 time.sleep(wait)
 
@@ -271,31 +276,9 @@ class OpenAIModel:
                 )
                 answer_logits[letter] = lp
         else:
-            # ============================================================
-            # ⚠️  WARNING: LOGPROBS NOT AVAILABLE — UNCERTAINTY DATA INVALID
-            # ============================================================
-            # This provider/model did NOT return token-level log-probabilities
-            # (choice.logprobs.content is empty or None).
-            #
-            # KNOWN AFFECTED MODELS:
-            #   - meta-llama/* via OpenRouter (Llama 3.x 8B / 70B)
-            #   - Most open-source models served via OpenRouter
-            #
-            # CONSEQUENCE:
-            #   The code below assigns artificial logits:
-            #     predicted letter → 0.0
-            #     all other letters → LOG_PROB_FLOOR (-20.0)
-            #   This produces:
-            #     entropy       ≈ 1.3e-7  (effectively 0, meaningless)
-            #     logit_margin  = 20.0    (constant, meaningless)
-            #     USS           ≈ 1.0     (constant, meaningless)
-            #   ONLY prediction_flip remains valid (derived from text, not logits).
-            #
-            # TODO: To fix, use one of:
-            #   (a) A model that supports logprobs (e.g. openai/gpt-5 via OpenRouter)
-            #   (b) Together AI endpoint for Llama (supports logprobs)
-            #   (c) Local HuggingFace inference (LlamaModel class above)
-            # ============================================================
+            # ⚠️  FALLBACK: provider did not return logprobs.
+            # Assigns artificial logits (predicted → 0.0, others → -20.0).
+            # Only prediction_flip remains valid in this case.
             message = getattr(choice, "message", None)
             text = ""
             if message is not None:

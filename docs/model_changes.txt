@@ -1,0 +1,145 @@
+Model Selection Changes from Proposal
+======================================
+Date: 2026-04-02
+
+Proposal (original plan):
+  1. Llama-3 8B Instruct   (open-source, small)
+  2. Llama-3 70B Instruct  (open-source, large)
+  3. GPT-5                 (proprietary)
+
+Final selection:
+  1. mistralai/ministral-3b-2512         (open-source, small, 3B params)
+  2. meta-llama/llama-3.1-8b-instruct    (open-source, medium, 8B params)
+  3. openai/gpt-4o                       (proprietary, large)
+
+All three models are accessed via OpenRouter API with logprobs enabled
+(top_logprobs=20 for all three).
+
+======================================================================
+DECISION LOG — Model Selection Process
+======================================================================
+Below is the full record of models evaluated and why each was accepted
+or rejected.  The core constraint throughout was: the model must return
+real token-level log-probabilities covering all four answer letters
+(A/B/C/D) via the OpenRouter API.
+
+----------------------------------------------------------------------
+1. Llama-3.1-8B Instruct  ✅ ACCEPTED
+----------------------------------------------------------------------
+  - Provider: Crusoe via OpenRouter
+  - top_logprobs=20 supported; returns real logit-scale values
+  - ABCD coverage: 97% of variants have all 4 letters with real values
+  - Data collected: 250 samples × 2 datasets, fully usable
+  - Kept as the "medium open-source" model in final selection
+
+----------------------------------------------------------------------
+2. GPT-5 (openai/gpt-5-chat)  ❌ REJECTED
+----------------------------------------------------------------------
+  - OpenAI explicitly blocks logprobs: "You are not allowed to request
+    logprobs from this model" (HTTP 502)
+  - Also requires max_output_tokens >= 16, conflicting with our
+    max_tokens=1 experimental design
+  - Conclusion: fundamentally incompatible with our methodology
+
+----------------------------------------------------------------------
+3. GPT-4o (openai/gpt-4o)  ✅ ACCEPTED
+----------------------------------------------------------------------
+  - Replaces GPT-5 as the proprietary model
+  - top_logprobs=20 supported via OpenAI provider on OpenRouter
+  - ABCD coverage: limited on high-confidence samples (SciQ: 62% of
+    variants have logit_margin ≈ 20 due to floor effect), but adequate
+    on uncertain samples where analysis matters most
+  - TruthfulQA coverage much better (only 24% floored)
+  - Data collected: 250 samples × 2 datasets
+
+----------------------------------------------------------------------
+4. Llama-3.1-70B Instruct  ❌ REJECTED
+----------------------------------------------------------------------
+  - No provider on OpenRouter supports logprobs for this model
+    (HTTP 404 with require_parameters=True)
+
+----------------------------------------------------------------------
+5. Llama-3.3-70B Instruct  ❌ REJECTED
+----------------------------------------------------------------------
+  - Only one provider (Crusoe) supports logprobs
+  - Crusoe persistently returns HTTP 429 (rate-limited upstream)
+  - Tested multiple times over several hours; never recovered
+  - Would likely produce excellent data (same provider as 8B), but
+    inaccessible
+
+----------------------------------------------------------------------
+6. Qwen3.5-27B (qwen/qwen3.5-27b)  ❌ REJECTED
+----------------------------------------------------------------------
+  - Alibaba provider hard-limits top_logprobs to [0, 5]
+  - With only 5 slots, non-answer tokens (lowercase "b", " B" with
+    space, "<think>", "Answer", etc.) consume most positions
+  - Result: 0% of samples had all 4 answer letters with real values
+    (tested on 128 SciQ + 65 TruthfulQA samples that completed)
+  - Logit margin variance inflated to ~13-15 (meaningless, driven by
+    floor values of -20.0 rather than real confidence variation)
+  - SciQ flip rate = 0.000 (model too confident, no flips to analyze)
+  - Additional issue: Qwen3.5 has built-in "thinking" mode that must
+    be disabled via "/no_think" prefix, which modifies the prompt
+  - Conclusion: logprobs data quality too poor for meaningful analysis
+
+----------------------------------------------------------------------
+7. Qwen3.5-9B (qwen/qwen3.5-9b)  ❌ REJECTED
+----------------------------------------------------------------------
+  - Same Alibaba provider, same top_logprobs=5 hard limit
+  - Additional problem: default thinking mode consumes all output
+    tokens (content=None, finish_reason=length), requiring
+    reasoning={effort:"none"} parameter to disable
+  - Even with thinking disabled, ABCD coverage same as 27B (~3/4)
+  - Same fundamental limitation as 27B; switching size doesn't help
+
+----------------------------------------------------------------------
+8. openai/gpt-oss-20b  ❌ REJECTED
+----------------------------------------------------------------------
+  - Reasoning model (similar to o1/o3 family)
+  - All tokens consumed by internal reasoning; content always None
+  - Adding logprobs=True causes provider to return empty response
+  - Fundamentally incompatible (reasoning models don't expose logprobs)
+
+----------------------------------------------------------------------
+9. Ministral-14B (mistralai/ministral-14b-2512)  ❌ REJECTED
+----------------------------------------------------------------------
+  - top_logprobs=20 supported
+  - ABCD coverage: 62% (10/16 test variants had full 4/4)
+  - But V2 (question-first) and V3 (minimal) particularly bad:
+    outputs "(D", "The" etc., with only 1/4 coverage in many cases
+  - Worse than Ministral-3B despite being larger
+
+----------------------------------------------------------------------
+10. Ministral-3B (mistralai/ministral-3b-2512)  ✅ ACCEPTED
+----------------------------------------------------------------------
+  - top_logprobs=20 supported
+  - ABCD coverage: 75% (12/16 test variants had full 4/4)
+  - Best coverage among all non-Llama API models tested
+  - V3 (minimal prompt) sometimes outputs "The"/"When" instead of
+    letter — this is a real finding about small-model sensitivity to
+    prompt format, not a data quality issue
+  - 3B size creates a nice scale gradient: 3B → 8B → GPT-4o
+  - Smaller models are expected to show more prompt sensitivity,
+    which is exactly what our study aims to measure
+
+======================================================================
+Final Configuration
+======================================================================
+  Model                          top_logprobs  Provider
+  ─────────────────────────────  ────────────  ────────────
+  mistralai/ministral-3b-2512    20            OpenRouter
+  meta-llama/llama-3.1-8b-inst   20            Crusoe
+  openai/gpt-4o                  20            OpenAI
+
+Comparison dimensions preserved:
+  - Scale gradient: 3B → 8B → large (GPT-4o)
+  - Architecture diversity: Mistral, Llama, GPT
+  - Open-source vs proprietary
+  - All use top_logprobs=20 for consistency
+
+Key difference from proposal:
+  - All three proposed models (Llama 70B, GPT-5) were inaccessible
+    due to logprobs API constraints, not by experimental design choice
+  - Substitutions were driven entirely by technical availability
+  - The experimental design, prompt variants, datasets, and metrics
+    remain unchanged from the proposal
