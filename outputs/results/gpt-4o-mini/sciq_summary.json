@@ -1,0 +1,19 @@
+{
+  "uss_mean": -0.057877656014551804,
+  "uss_std": 0.6786878938843378,
+  "logit_margin_variance_mean": 5.3876506166074964,
+  "logit_margin_variance_std": 9.43402773619377,
+  "entropy_variance_mean": 0.0032003390599367578,
+  "entropy_variance_std": 0.016480173251839987,
+  "mean_entropy_mean": 0.010034616033914654,
+  "mean_entropy_std": 0.05213550458822752,
+  "std_entropy_mean": 0.012127802399337305,
+  "std_entropy_std": 0.05525627085588916,
+  "mean_logit_margin_mean": 18.27916351747691,
+  "mean_logit_margin_std": 3.0828276028107986,
+  "prediction_flip_rate": 0.016,
+  "n_samples": 250,
+  "model": "gpt-4o-mini",
+  "dataset": "sciq",
+  "timestamp": "2026-04-01T17:33:19"
+}

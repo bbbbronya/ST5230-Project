@@ -1,0 +1,19 @@
+{
+  "uss_mean": -0.1712750850008833,
+  "uss_std": 0.4596825808167888,
+  "logit_margin_variance_mean": 5.194059337210347,
+  "logit_margin_variance_std": 4.419728869817885,
+  "entropy_variance_mean": 0.03162878898647251,
+  "entropy_variance_std": 0.05460555042095171,
+  "mean_entropy_mean": 0.15325745260092577,
+  "mean_entropy_std": 0.1888921527463666,
+  "std_entropy_mean": 0.12734624274788042,
+  "std_entropy_std": 0.12414396257760756,
+  "mean_logit_margin_mean": 5.8135845564912305,
+  "mean_logit_margin_std": 2.2117716681774646,
+  "prediction_flip_rate": 0.096,
+  "n_samples": 250,
+  "model": "mistralai/ministral-3b-2512",
+  "dataset": "sciq",
+  "timestamp": "2026-04-02T14:23:25"
+}

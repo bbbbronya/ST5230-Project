@@ -1,0 +1,19 @@
+{
+  "uss_mean": 0.24588788655026622,
+  "uss_std": 0.47947563130402376,
+  "logit_margin_variance_mean": 2.4793536688258015,
+  "logit_margin_variance_std": 3.3844170307715293,
+  "entropy_variance_mean": 0.040596337155369096,
+  "entropy_variance_std": 0.051113488436637655,
+  "mean_entropy_mean": 0.35045629551754937,
+  "mean_entropy_std": 0.3209546214985144,
+  "std_entropy_mean": 0.15580411422637025,
+  "std_entropy_std": 0.12775529400187402,
+  "mean_logit_margin_mean": 4.267869882870497,
+  "mean_logit_margin_std": 3.0992262907049826,
+  "prediction_flip_rate": 0.316,
+  "n_samples": 250,
+  "model": "meta-llama/llama-3.1-8b-instruct",
+  "dataset": "truthfulqa",
+  "timestamp": "2026-04-02T00:40:59"
+}

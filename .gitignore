@@ -153,9 +153,9 @@ dmypy.json
 cython_debug/
 
 # Project outputs (large files, generated data)
-outputs/results/
-outputs/figures/
-outputs/data/
+# outputs/results/
+# outputs/figures/
+# outputs/data/
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
