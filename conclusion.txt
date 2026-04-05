@@ -1,0 +1,202 @@
+ST5230 Project — Conclusion
+============================
+
+Research Question:
+  How sensitive are LLM uncertainty estimates to semantically equivalent
+  prompt perturbations?
+
+Models:  Ministral-3B (open-source, 3B)
+         Llama-3.1-8B-Instruct (open-source, 8B)
+         GPT-4o (proprietary)
+
+Datasets: SciQ (250 samples), TruthfulQA (250 samples)
+Prompt Variants: V0 (baseline), V1 (reworded), V2 (question-first), V3 (minimal)
+
+===============================================================================
+PART I — DETAILED CONCLUSION
+===============================================================================
+
+1. Overall Stability
+--------------------
+
+Prediction Flip Rate (the proportion of samples whose predicted answer changes
+across the 4 prompt variants) reveals a clear hierarchy:
+
+  Model          SciQ     TruthfulQA
+  Ministral-3B   9.6%     39.2%
+  Llama-3.1-8B   4.8%     31.6%
+  GPT-4o         2.0%      9.6%
+
+Key observations:
+
+(a) Model scale matters. GPT-4o is the most stable model across both datasets,
+    with flip rates 4-5x lower than Ministral-3B. The 8B Llama model falls in
+    between. This suggests that larger, more capable models develop more robust
+    internal representations that are less susceptible to surface-level prompt
+    variations.
+
+(b) Task difficulty amplifies sensitivity. All three models show dramatically
+    higher flip rates on TruthfulQA (which tests common misconceptions) than
+    on SciQ (factual science questions). TruthfulQA flip rates are 3-8x higher
+    than SciQ flip rates for the same model. When a model is uncertain about the
+    answer content itself, even minor prompt changes can tip the decision.
+
+(c) Accuracy and stability are correlated but not identical. GPT-4o achieves
+    97.3% accuracy on SciQ with only 2.0% flips, while Ministral-3B achieves
+    93.3% accuracy but 9.6% flips — a much larger gap in stability than in
+    accuracy. This means accuracy alone is an incomplete picture of reliability.
+
+
+2. Uncertainty-Flip Correlation
+-------------------------------
+
+We examine whether Logit Margin Variance (LMVar) — the variance of the gap
+between top-1 and top-2 logits across prompt variants — predicts prediction
+flips.
+
+  Model          Dataset      Flipped Samples    Stable Samples
+                              Mean LMVar (n)     Mean LMVar (n)
+  Ministral-3B   SciQ         5.75 (24)          5.14 (226)
+  Ministral-3B   TruthfulQA   1.35 (98)          4.77 (152)
+  Llama-3.1-8B   SciQ         1.46 (12)          4.35 (238)
+  Llama-3.1-8B   TruthfulQA   1.77 (79)          2.81 (171)
+  GPT-4o         SciQ         2.01 (5)           3.54 (245)
+  GPT-4o         TruthfulQA   5.62 (24)          6.32 (226)
+
+Key observations:
+
+(a) Counter-intuitive pattern: In most cases, samples that actually flip have
+    LOWER LMVar than stable samples. This seems paradoxical but has a clear
+    explanation — samples that flip tend to have low confidence across ALL
+    variants (small logit margins uniformly), resulting in low variance. Stable
+    high-confidence samples, by contrast, may have large absolute margin
+    fluctuations even though the prediction never changes.
+
+(b) Hidden instability is prevalent. Many samples never flip but exhibit high
+    LMVar (>5.0), indicating that the model's confidence fluctuates substantially
+    across prompt variants even when the final answer stays the same:
+
+      Ministral-3B:  SciQ 38.0%, TruthfulQA 12.8%
+      Llama-3.1-8B:  SciQ 32.8%, TruthfulQA 10.0%
+      GPT-4o:        SciQ 20.8%, TruthfulQA 41.6%
+
+    Notably, GPT-4o on TruthfulQA has the highest hidden instability (41.6%)
+    despite having a low flip rate (9.6%). This means GPT-4o "knows" the right
+    answer but its confidence in that answer swings significantly with prompt
+    wording — a finding with implications for applications that rely on
+    calibrated confidence scores.
+
+(c) The point-biserial correlation r(LMVar, Flip) is weak across all
+    conditions (ranging from -0.244 to 0.041), confirming that logit margin
+    variance and prediction flips capture different dimensions of prompt
+    sensitivity. Both metrics are needed for a complete picture.
+
+
+3. Prompt Type Comparison
+-------------------------
+
+Per-variant accuracy across all models:
+
+  Variant    Description       Ministral-3B         Llama-3.1-8B         GPT-4o
+                              SciQ   TruthQA       SciQ   TruthQA       SciQ   TruthQA
+  V0         Baseline         94.8%  60.4%         93.2%  59.2%         97.6%  84.8%
+  V1         Reworded         94.8%  52.8%         93.6%  60.4%         97.2%  84.0%
+  V2         Question-first   93.6%  57.2%         92.8%  62.0%         96.8%  85.6%
+  V3         Minimal          90.0%  55.2%         92.4%  59.6%         97.6%  86.0%
+
+Key observations:
+
+(a) V3 (minimal, no instruction) tends to reduce accuracy for smaller models.
+    Ministral-3B drops from 94.8% to 90.0% on SciQ when the instruction
+    sentence is removed. GPT-4o is unaffected (97.6% for both V0 and V3),
+    suggesting that larger models are less dependent on explicit instructions.
+
+(b) Mean logit margin decreases from V0 to V3 for all models, indicating that
+    models are generally most confident with the standard instruction-first
+    format:
+
+      GPT-4o SciQ:       V0=18.75  V1=18.22  V2=18.32  V3=16.47
+      Ministral-3B SciQ: V0=7.32   V1=6.34   V2=5.35   V3=4.25
+
+    The drop is especially steep for Ministral-3B (7.32 -> 4.25, a 42% decline),
+    while GPT-4o's decline is more moderate (18.75 -> 16.47, a 12% decline).
+
+(c) No single variant is universally best or worst across all model-dataset
+    combinations. On TruthfulQA, V2 (question-first) actually gives Llama-8B
+    its highest accuracy (62.0%), and V3 (minimal) gives GPT-4o its highest
+    (86.0%). This highlights that prompt format effects are model-dependent
+    and cannot be universally optimized.
+
+
+4. USS (Uncertainty Stability Score) Analysis
+---------------------------------------------
+
+USS = 1 - std(entropy) / (mean(entropy) + epsilon) across prompt variants.
+Higher USS means more stable uncertainty estimates.
+
+  Model          SciQ     TruthfulQA
+  Ministral-3B   -0.171    0.442
+  Llama-3.1-8B   -0.241    0.246
+  GPT-4o          0.194   -0.194
+
+USS values are generally low and often negative, indicating that entropy
+fluctuations across prompt variants are large relative to the mean — i.e.,
+uncertainty estimates are fundamentally unstable under prompt perturbation.
+This is partly due to the floor effect (logprobs outside top-N are
+approximated as -20.0), but even accounting for this, the instability is real.
+
+The negative USS values for several model-dataset pairs mean that the standard
+deviation of entropy EXCEEDS the mean entropy, a strong signal of instability.
+
+
+===============================================================================
+PART II — EXECUTIVE SUMMARY
+===============================================================================
+
+This study tested how sensitive LLM uncertainty estimates are to semantically
+equivalent prompt reformulations, using three models (Ministral-3B, Llama-8B,
+GPT-4o), two datasets (SciQ, TruthfulQA), and four prompt variants.
+
+KEY FINDINGS:
+
+1. Predictions are not robust to prompt wording.
+   Even semantically identical prompts cause prediction flips in 2-39% of
+   samples, depending on model and task difficulty. Smaller models and harder
+   tasks are more affected.
+
+2. Confidence is even less robust than predictions.
+   Hidden instability — where the answer stays the same but confidence
+   fluctuates significantly — affects 10-42% of samples. GPT-4o on TruthfulQA
+   shows 41.6% hidden instability despite only 9.6% flip rate, meaning its
+   confidence scores are unreliable even when its answers are stable.
+
+3. Prompt format disproportionately affects smaller models.
+   Removing the instruction sentence (V3) causes a 4.8pp accuracy drop for
+   Ministral-3B on SciQ and a 42% decline in logit margin, while GPT-4o is
+   virtually unaffected. Larger models are more resilient to surface-level
+   prompt variations.
+
+4. No universal "best" prompt format exists.
+   Different models achieve peak accuracy under different prompt variants,
+   especially on harder tasks. This makes prompt format a confound in any
+   evaluation that uses a single fixed prompt.
+
+5. Flip rate and confidence variance capture different phenomena.
+   The correlation between LMVar and prediction flips is weak (|r| < 0.25),
+   meaning both metrics are independently informative. A complete assessment
+   of prompt sensitivity requires examining both prediction stability and
+   uncertainty stability.
+
+IMPLICATIONS:
+
+- For practitioners: Do not trust a single prompt's confidence score. If
+  calibrated uncertainty matters for your application (e.g., medical triage,
+  autonomous decisions), test under multiple prompt phrasings.
+
+- For researchers: Benchmark results obtained with a single prompt template
+  may not generalize. Reporting performance variance across prompt variants
+  should become standard practice.
+
+- For model developers: Larger models show better prompt stability, but even
+  GPT-4o exhibits significant hidden instability. Improving uncertainty
+  calibration under prompt perturbation remains an open challenge.
